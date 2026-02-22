@@ -6,6 +6,28 @@ Type what you want to do in plain language on your prompt, press `Ctrl+E`, and t
 
 Supports **OpenAI**, **Anthropic** (native), and **Google Gemini** out of the box, plus any OpenAI-compatible API.
 
+## Usage
+
+```bash
+# Ctrl+E (shell integration) — type naturally, press Ctrl+E
+$ find py files modified in the last 3 days   # <- press Ctrl+E here
+$ find . -name "*.py" -mtime -3               # <- auto-replaced
+
+# Direct invocation
+$ llmc "find the 10 largest files in the current directory"
+du -ah . | sort -rh | head -10
+```
+
+### CLI Options
+
+```
+llmc <query>        convert natural language to a shell command
+llmc --setup        configure or reconfigure API provider/model/key
+llmc --config       show current configuration
+llmc --version      show version
+llmc --help         show help
+```
+
 ## How It Works
 
 ```
@@ -122,28 +144,6 @@ export LLM_MODEL="llama3"
 
 # LiteLLM / vLLM
 export LLM_API_BASE="http://localhost:4000/v1"
-```
-
-## Usage
-
-```bash
-# Direct invocation
-$ llmc "find the 10 largest files in the current directory"
-du -ah . | sort -rh | head -10
-
-# Via Ctrl+E (shell integration)
-$ find py files modified in the last 3 days   # <- press Ctrl+E here
-$ find . -name "*.py" -mtime -3               # <- auto-replaced
-```
-
-### CLI Options
-
-```
-llmc <query>        convert natural language to a shell command
-llmc --setup        reconfigure API provider/model/key
-llmc --config       show current configuration
-llmc --version      show version
-llmc --help         show help
 ```
 
 ## Supported Providers
