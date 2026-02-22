@@ -161,6 +161,18 @@ fn prompt_stderr(msg: &str) -> String {
     }
 }
 
+fn is_interactive() -> bool {
+    // Check if stdin is a TTY, or if /dev/tty is accessible for reading
+    // When invoked from a shell widget (Ctrl+E), stdin is not a TTY
+    // but /dev/tty may still be locked by zle, making interactive input unreliable
+    unsafe { libc_isatty(0) != 0 }
+}
+
+extern "C" {
+    #[link_name = "isatty"]
+    fn libc_isatty(fd: i32) -> i32;
+}
+
 fn resolve_api_key() -> String {
     // 1. Environment variable
     if let Ok(key) = env::var("LLM_API_KEY") {
@@ -177,7 +189,11 @@ fn resolve_api_key() -> String {
         }
     }
 
-    // 3. Interactive setup
+    // 3. Interactive setup (only if running interactively)
+    if !is_interactive() {
+        eprintln!("llmc: not configured. Run `llmc --setup` first.");
+        process::exit(1);
+    }
     interactive_setup()
 }
 
