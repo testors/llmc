@@ -62,12 +62,12 @@ Remove the `source` and `export PATH` lines from your `~/.zshrc` or `~/.bashrc`.
 
 ## Configuration
 
-### Interactive Setup (First Run)
+### Setup
 
-On first run, llmc walks you through provider and model selection:
+Run `llmc --setup` to configure your API provider, model, and key:
 
 ```
-$ llmc "check disk usage"
+$ llmc --setup
 llmc: initial setup
 
 Select API provider:
@@ -91,15 +91,9 @@ API Key: sk-ant-...
 llmc: config saved -> ~/.config/llmc/config.json
 ```
 
-The config is saved to `~/.config/llmc/config.json` with `chmod 600` (owner-only access).
+The model list is fetched from the latest [models.json](models.json) at setup time, with a built-in fallback if the fetch fails.
 
-### Reconfigure
-
-```bash
-llmc --setup
-```
-
-Re-runs the provider/model/key setup and overwrites the existing config.
+Config is saved to `~/.config/llmc/config.json` with `chmod 600` (owner-only access). Run `llmc --setup` again at any time to reconfigure.
 
 ### Environment Variables (Override)
 
