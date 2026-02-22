@@ -46,18 +46,19 @@ Supports **macOS** and **Linux** on both **x86_64** and **arm64**.
 git clone https://github.com/testors/llmc.git
 cd llmc
 cargo build --release
-./target/release/llmc --install
+cp target/release/llmc ~/.local/bin/
 ```
 
-Requires [Rust toolchain](https://rustup.rs/).
+Requires [Rust toolchain](https://rustup.rs/). Run the curl installer afterwards for shell integration.
 
 ### Uninstall
 
 ```bash
-llmc --uninstall
+rm ~/.local/bin/llmc
+rm -rf ~/.local/share/llmc ~/.config/llmc
 ```
 
-Removes the binary, shell integration, and optionally the config file.
+Remove the `source` and `export PATH` lines from your `~/.zshrc` or `~/.bashrc`.
 
 ## Configuration
 
@@ -146,8 +147,7 @@ $ find . -name "*.py" -mtime -3               # <- auto-replaced
 ```
 llmc <query>        convert natural language to a shell command
 llmc --setup        reconfigure API provider/model/key
-llmc --install      install binary & Ctrl+E shell integration
-llmc --uninstall    remove everything
+llmc --config       show current configuration
 llmc --version      show version
 llmc --help         show help
 ```

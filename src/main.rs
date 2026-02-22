@@ -181,6 +181,70 @@ fn resolve_api_key() -> String {
     interactive_setup()
 }
 
+// ── remote model list ──────────────────────────────────────────────────────────
+const MODELS_URL: &str =
+    "https://raw.githubusercontent.com/testors/llmc/main/models.json";
+
+fn fetch_provider_config(provider_key: &str) -> Option<(String, Vec<(String, String)>)> {
+    let resp = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(3))
+        .timeout_read(Duration::from_secs(3))
+        .build()
+        .get(MODELS_URL)
+        .call()
+        .ok()?;
+    let text = resp.into_string().ok()?;
+    let json: Value = serde_json::from_str(&text).ok()?;
+    let provider = json.get(provider_key)?;
+    let api_base = provider["api_base"].as_str()?.to_string();
+    let models = provider["models"]
+        .as_array()?
+        .iter()
+        .filter_map(|m| {
+            Some((
+                m["id"].as_str()?.to_string(),
+                m["desc"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    Some((api_base, models))
+}
+
+fn fallback_provider(key: &str) -> (String, Vec<(String, String)>) {
+    match key {
+        "openai" => (
+            "https://api.openai.com/v1".into(),
+            vec![
+                ("gpt-5-mini".into(), "recommended".into()),
+                ("gpt-5.2".into(), "high performance".into()),
+                ("gpt-4.1-mini".into(), "legacy, cheap".into()),
+            ],
+        ),
+        "anthropic" => (
+            "https://api.anthropic.com".into(),
+            vec![
+                ("claude-haiku-4-5-20251001".into(), "recommended".into()),
+                ("claude-sonnet-4-5-20250929".into(), "balanced".into()),
+                ("claude-opus-4-5-20251101".into(), "high performance".into()),
+            ],
+        ),
+        "gemini" => (
+            "https://generativelanguage.googleapis.com/v1beta/openai".into(),
+            vec![
+                ("gemini-2.5-flash-lite".into(), "recommended".into()),
+                ("gemini-2.5-flash".into(), "balanced".into()),
+                ("gemini-2.5-pro".into(), "high performance".into()),
+            ],
+        ),
+        _ => unreachable!(),
+    }
+}
+
+fn get_provider(key: &str) -> (String, Vec<(String, String)>) {
+    fetch_provider_config(key).unwrap_or_else(|| fallback_provider(key))
+}
+
+// ── interactive setup ──────────────────────────────────────────────────────────
 fn interactive_setup() -> String {
     eprintln!("llmc: initial setup");
     eprintln!();
@@ -195,30 +259,18 @@ fn interactive_setup() -> String {
     eprintln!();
 
     let (api_base, model, api_key) = match choice.as_str() {
-        "1" => setup_preset(
-            "https://api.openai.com/v1",
-            &[
-                ("gpt-5-mini", "recommended"),
-                ("gpt-5.2", "high performance"),
-                ("gpt-4.1-mini", "legacy, cheap"),
-            ],
-        ),
-        "2" => setup_preset(
-            "https://api.anthropic.com",
-            &[
-                ("claude-haiku-4-5-20251001", "recommended"),
-                ("claude-sonnet-4-5-20250929", "balanced"),
-                ("claude-opus-4-5-20251101", "high performance"),
-            ],
-        ),
-        "3" => setup_preset(
-            "https://generativelanguage.googleapis.com/v1beta/openai",
-            &[
-                ("gemini-2.5-flash-lite", "recommended"),
-                ("gemini-2.5-flash", "balanced"),
-                ("gemini-2.5-pro", "high performance"),
-            ],
-        ),
+        "1" => {
+            let (base, models) = get_provider("openai");
+            setup_preset(&base, &models)
+        }
+        "2" => {
+            let (base, models) = get_provider("anthropic");
+            setup_preset(&base, &models)
+        }
+        "3" => {
+            let (base, models) = get_provider("gemini");
+            setup_preset(&base, &models)
+        }
         _ => setup_custom(),
     };
 
@@ -236,7 +288,7 @@ fn interactive_setup() -> String {
     api_key
 }
 
-fn setup_preset(api_base: &str, models: &[(&str, &str)]) -> (String, String, String) {
+fn setup_preset(api_base: &str, models: &[(String, String)]) -> (String, String, String) {
     eprintln!("Select model:");
     for (i, (name, desc)) in models.iter().enumerate() {
         eprintln!("  {}) {} ({})", i + 1, name, desc);
@@ -249,7 +301,7 @@ fn setup_preset(api_base: &str, models: &[(&str, &str)]) -> (String, String, Str
     let model_idx: usize = model_choice.parse().unwrap_or(1);
 
     let model = if model_idx >= 1 && model_idx <= models.len() {
-        models[model_idx - 1].0.to_string()
+        models[model_idx - 1].0.clone()
     } else {
         eprintln!();
         let m = prompt_stderr("Model name: ");
@@ -477,6 +529,76 @@ fn exec_sandboxed(cmd: &str, args: &[String], deadline: Instant) -> String {
     output
 }
 
+// ── API error handling ─────────────────────────────────────────────────────────
+fn handle_api_error(err: ureq::Error) -> ! {
+    match err {
+        ureq::Error::Status(status, resp) => {
+            let body = resp.into_string().unwrap_or_default();
+            let hint = match status {
+                401 => "Invalid API key. Run `llmc --setup` to reconfigure.",
+                403 => "Access denied. Check your API key permissions.",
+                404 => "Model not found. Run `llmc --setup` to change model.",
+                429 => "Rate limited. Please try again later.",
+                500..=599 => "Server error. Please try again later.",
+                _ => "",
+            };
+            eprintln!("llmc: API error {status}: {hint}");
+            // Try to extract error message from JSON response
+            if let Ok(json) = serde_json::from_str::<Value>(&body) {
+                if let Some(msg) = json["error"]["message"].as_str() {
+                    eprintln!("llmc: {msg}");
+                }
+            }
+            process::exit(1);
+        }
+        ureq::Error::Transport(t) => {
+            eprintln!("llmc: connection failed: {t}");
+            process::exit(1);
+        }
+    }
+}
+
+// ── show config ────────────────────────────────────────────────────────────────
+fn cmd_config() {
+    let config = load_config();
+    let path = config_path();
+
+    let api_base = config["api_base"].as_str().unwrap_or("(not set)");
+    let model = config["model"].as_str().unwrap_or("(not set)");
+    let api_key = config["api_key"]
+        .as_str()
+        .map(|k| {
+            if k.len() > 8 {
+                format!("{}...{}", &k[..4], &k[k.len() - 4..])
+            } else {
+                "****".to_string()
+            }
+        })
+        .unwrap_or_else(|| "(not set)".to_string());
+
+    let backend = config["api_base"]
+        .as_str()
+        .map(|b| {
+            if b.contains("anthropic.com") {
+                "Anthropic"
+            } else if b.contains("googleapis.com") {
+                "Gemini"
+            } else if b.contains("openai.com") {
+                "OpenAI"
+            } else {
+                "Custom"
+            }
+        })
+        .unwrap_or("(unknown)");
+
+    eprintln!("Config: {}", path.display());
+    eprintln!();
+    eprintln!("  Provider:  {backend}");
+    eprintln!("  API Base:  {api_base}");
+    eprintln!("  Model:     {model}");
+    eprintln!("  API Key:   {api_key}");
+}
+
 // ── OpenAI API call ────────────────────────────────────────────────────────────
 fn call_openai(
     agent: &ureq::Agent,
@@ -501,10 +623,7 @@ fn call_openai(
 
     let text = match resp {
         Ok(r) => r.into_string().unwrap_or_default(),
-        Err(e) => {
-            eprintln!("llmc: API request failed: {e}");
-            process::exit(1);
-        }
+        Err(e) => handle_api_error(e),
     };
 
     let parsed: ChatResponse = serde_json::from_str(&text).unwrap_or_else(|e| {
@@ -575,10 +694,7 @@ fn call_anthropic(
 
     let text = match resp {
         Ok(r) => r.into_string().unwrap_or_default(),
-        Err(e) => {
-            eprintln!("llmc: API request failed: {e}");
-            process::exit(1);
-        }
+        Err(e) => handle_api_error(e),
     };
 
     let parsed: AnthropicResponse = serde_json::from_str(&text).unwrap_or_else(|e| {
@@ -694,188 +810,12 @@ fn anthropic_push_tool_results(messages: &mut Vec<Value>, results: &[(String, St
     }));
 }
 
-// ── embedded shell integration scripts ──────────────────────────────────────────
-const SETUP_BASH: &str = r#"# llmc: Bash integration — source this file in your .bashrc
-# Usage: Press Ctrl+E with a natural language description on the command line
-
-_ai_cmd_replace() {
-  [[ -z "$READLINE_LINE" ]] && return
-
-  local result
-  result="$(llmc "$READLINE_LINE" 2>/dev/tty)"
-
-  if [[ $? -eq 0 && -n "$result" ]]; then
-    READLINE_LINE="$result"
-    READLINE_POINT=${#READLINE_LINE}
-  fi
-}
-
-bind -x '"\C-e": _ai_cmd_replace'
-"#;
-
-const SETUP_ZSH: &str = r#"# llmc: Zsh integration — source this file in your .zshrc
-# Usage: Press Ctrl+E with a natural language description on the command line
-
-_ai_cmd_replace() {
-  [[ -z "$BUFFER" ]] && return
-
-  local result
-  result="$(llmc "$BUFFER" 2>/dev/tty)"
-
-  if [[ $? -eq 0 && -n "$result" ]]; then
-    BUFFER="$result"
-    CURSOR=${#BUFFER}
-  fi
-  zle redisplay
-}
-
-zle -N _ai_cmd_replace
-bindkey '^e' _ai_cmd_replace
-"#;
-
-// ── install / uninstall ────────────────────────────────────────────────────────
-fn cmd_install() {
-    let home = env::var("HOME").unwrap_or_else(|_| {
-        eprintln!("llmc: HOME not set");
-        process::exit(1);
-    });
-
-    let install_dir = PathBuf::from(&home).join(".local/bin");
-    let data_dir = PathBuf::from(&home).join(".local/share/llmc");
-
-    // 1. Copy self to ~/.local/bin/llmc
-    let self_path = env::current_exe().unwrap_or_else(|e| {
-        eprintln!("llmc: cannot determine own path: {e}");
-        process::exit(1);
-    });
-    let _ = fs::create_dir_all(&install_dir);
-    let dest = install_dir.join("llmc");
-    if self_path != dest {
-        fs::copy(&self_path, &dest).unwrap_or_else(|e| {
-            eprintln!("llmc: failed to copy binary: {e}");
-            process::exit(1);
-        });
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&dest, fs::Permissions::from_mode(0o755));
-        }
-        eprintln!("Installed: {}", dest.display());
-    } else {
-        eprintln!("Binary already at {}", dest.display());
-    }
-
-    // 2. Write shell integration scripts
-    let _ = fs::create_dir_all(&data_dir);
-    let bash_path = data_dir.join("setup_bash.sh");
-    let zsh_path = data_dir.join("setup_zsh.sh");
-    let _ = fs::write(&bash_path, SETUP_BASH);
-    let _ = fs::write(&zsh_path, SETUP_ZSH);
-    eprintln!("Installed: {}/", data_dir.display());
-
-    // 3. Detect shell and rc file
-    let shell_name = env::var("SHELL").unwrap_or_default();
-    let (rc_file, setup_file) = if shell_name.ends_with("zsh") {
-        (PathBuf::from(&home).join(".zshrc"), &zsh_path)
-    } else if shell_name.ends_with("bash") {
-        (PathBuf::from(&home).join(".bashrc"), &bash_path)
-    } else {
-        eprintln!("Done! Shell integration is available for bash and zsh only.");
-        return;
-    };
-
-    // 4. Ensure PATH
-    let rc_content = fs::read_to_string(&rc_file).unwrap_or_default();
-    let install_dir_str = install_dir.display().to_string();
-    if !rc_content.contains(&install_dir_str) {
-        let line = format!("\nexport PATH=\"{}:$PATH\"\n", install_dir_str);
-        let _ = fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&rc_file)
-            .and_then(|mut f| f.write_all(line.as_bytes()));
-        eprintln!("Added {} to PATH in {}", install_dir_str, rc_file.display());
-    }
-
-    // 5. Add shell integration source line
-    let setup_str = setup_file.display().to_string();
-    let rc_content = fs::read_to_string(&rc_file).unwrap_or_default();
-    if !rc_content.contains(&setup_str) {
-        let line = format!("\nsource \"{}\"\n", setup_str);
-        let _ = fs::OpenOptions::new()
-            .append(true)
-            .open(&rc_file)
-            .and_then(|mut f| f.write_all(line.as_bytes()));
-        eprintln!("Added Ctrl+E integration to {}", rc_file.display());
-    }
-
-    eprintln!();
-    eprintln!("Done! Run this to activate now:");
-    eprintln!("  source {}", rc_file.display());
-}
-
-fn cmd_uninstall() {
-    let home = env::var("HOME").unwrap_or_else(|_| {
-        eprintln!("llmc: HOME not set");
-        process::exit(1);
-    });
-
-    let bin = PathBuf::from(&home).join(".local/bin/llmc");
-    let data_dir = PathBuf::from(&home).join(".local/share/llmc");
-    let config_dir = PathBuf::from(&home).join(".config/llmc");
-
-    eprintln!("Uninstalling llmc...");
-
-    // Remove shell integration from rc files
-    for name in &[".zshrc", ".bashrc", ".profile"] {
-        let rc = PathBuf::from(&home).join(name);
-        if let Ok(content) = fs::read_to_string(&rc) {
-            if content.contains("llmc") {
-                let filtered: String = content
-                    .lines()
-                    .filter(|l| !l.contains("setup_zsh.sh") && !l.contains("setup_bash.sh"))
-                    .map(|l| format!("{l}\n"))
-                    .collect();
-                let _ = fs::write(&rc, filtered);
-                eprintln!("Cleaned: {}", rc.display());
-            }
-        }
-    }
-
-    // Remove data dir
-    if data_dir.exists() {
-        let _ = fs::remove_dir_all(&data_dir);
-        eprintln!("Removed: {}", data_dir.display());
-    }
-
-    // Remove config
-    if config_dir.exists() {
-        let answer = prompt_stderr("Remove config (API key)? [y/N]: ");
-        if answer.eq_ignore_ascii_case("y") {
-            let _ = fs::remove_dir_all(&config_dir);
-            eprintln!("Removed: {}", config_dir.display());
-        } else {
-            eprintln!("Kept: {}", config_dir.display());
-        }
-    }
-
-    // Remove binary last (we are running from it, but the OS keeps the fd open)
-    if bin.exists() {
-        let _ = fs::remove_file(&bin);
-        eprintln!("Removed: {}", bin.display());
-    }
-
-    eprintln!();
-    eprintln!("Done! Restart your shell to apply changes.");
-}
-
 fn print_help() {
     eprintln!("llmc {} — natural language to shell command", env!("CARGO_PKG_VERSION"));
     eprintln!();
     eprintln!("Usage: llmc <query>        convert natural language to a shell command");
     eprintln!("       llmc --setup        reconfigure API provider/model/key");
-    eprintln!("       llmc --install      install binary & Ctrl+E shell integration");
-    eprintln!("       llmc --uninstall    remove everything");
+    eprintln!("       llmc --config       show current configuration");
     eprintln!("       llmc --version      show version");
     eprintln!("       llmc --help         show this help");
 }
@@ -906,12 +846,8 @@ fn main() {
                 eprintln!("Setup complete.");
                 return;
             }
-            "--install" => {
-                cmd_install();
-                return;
-            }
-            "--uninstall" => {
-                cmd_uninstall();
+            "--config" => {
+                cmd_config();
                 return;
             }
             _ => {}
