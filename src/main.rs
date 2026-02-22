@@ -484,7 +484,8 @@ fn system_prompt() -> String {
          1. Your final answer MUST be a single shell command (or pipeline) — nothing else.\n\
          2. Do NOT wrap the command in markdown code fences or quotes.\n\
          3. Do NOT include any explanation, commentary, or surrounding text.\n\
-         4. If you cannot produce a valid command, output exactly: echo \"ERROR: unable to generate command\""
+         4. If you cannot produce a valid command, respond with EXACTLY: NOCOMMAND: <brief reason>\n\
+            Example: NOCOMMAND: not a shell task"
     )
 }
 
@@ -925,6 +926,15 @@ fn main() {
 
         match result {
             ApiResult::Text(text) => {
+                if let Some(rest) = text.strip_prefix("NOCOMMAND:") {
+                    let reason = rest.lines().next().unwrap_or("").trim();
+                    if reason.is_empty() {
+                        eprintln!("llmc: could not generate a command");
+                    } else {
+                        eprintln!("llmc: {reason}");
+                    }
+                    process::exit(1);
+                }
                 println!("{text}");
                 return;
             }
