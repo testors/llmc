@@ -513,21 +513,7 @@ fn system_prompt() -> String {
 }
 
 fn chat_system_prompt() -> String {
-    let cwd = env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| ".".into());
-    let shell = env::var("SHELL").unwrap_or_else(|_| "bash".into());
-    let os = env::consts::OS;
-
-    format!(
-        "You are a helpful terminal assistant. Answer concisely.\n\n\
-         Environment:\n- OS: {os}\n- Shell: {shell}\n- CWD: {cwd}\n\n\
-         You may call the `run_readonly_command` tool to inspect the local filesystem when needed.\n\n\
-         Rules:\n\
-         1. Answer in plain text. No markdown formatting.\n\
-         2. Be concise — prefer short, direct answers.\n\
-         3. When showing commands, just write them plainly without code fences."
-    )
+    "You are a helpful assistant. Be concise. Answer in plain text without markdown formatting.".to_string()
 }
 
 // ── model upgrade for ask mode ──────────────────────────────────────────────────
@@ -991,7 +977,7 @@ fn main() {
         (query, Mode::Chat { to_stderr: false })
     } else {
         let joined = args.join(" ");
-        if joined.starts_with("? ") || joined == "?" {
+        if joined.starts_with('?') {
             let query = joined["?".len()..].trim().to_string();
             if query.is_empty() {
                 eprintln!("llmc: empty question");
