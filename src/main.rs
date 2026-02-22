@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 // ── constants ──────────────────────────────────────────────────────────────────
-const HARD_TIMEOUT: Duration = Duration::from_secs(15);
+const HARD_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT_BYTES: usize = 10_000;
 const MAX_TOOL_ROUNDS: usize = 10;
 const ALLOWED_COMMANDS: &[&str] = &[
@@ -127,12 +127,20 @@ fn save_config(config: &Value) {
         let _ = fs::create_dir_all(parent);
     }
     if let Ok(s) = serde_json::to_string_pretty(config) {
-        if fs::write(&path, s).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-            }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _ = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)
+                .and_then(|mut f| f.write_all(s.as_bytes()));
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = fs::write(&path, s);
         }
     }
 }
@@ -149,14 +157,24 @@ fn prompt_stderr(msg: &str) -> String {
             let _ = writer.flush();
             let mut reader = io::BufReader::new(&tty_file);
             let mut line = String::new();
-            let _ = reader.read_line(&mut line);
-            line.trim().to_string()
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    eprintln!("\nllmc: failed to read input");
+                    process::exit(1);
+                }
+                Ok(_) => line.trim().to_string(),
+            }
         }
         Err(_) => {
             eprint!("{msg}");
             let mut line = String::new();
-            let _ = io::stdin().read_line(&mut line);
-            line.trim().to_string()
+            match io::stdin().read_line(&mut line) {
+                Ok(0) | Err(_) => {
+                    eprintln!("\nllmc: failed to read input");
+                    process::exit(1);
+                }
+                Ok(_) => line.trim().to_string(),
+            }
         }
     }
 }
@@ -173,7 +191,7 @@ extern "C" {
     fn libc_isatty(fd: i32) -> i32;
 }
 
-fn resolve_api_key() -> String {
+fn resolve_api_key(config: &Value) -> String {
     // 1. Environment variable
     if let Ok(key) = env::var("LLM_API_KEY") {
         if !key.is_empty() {
@@ -182,7 +200,6 @@ fn resolve_api_key() -> String {
     }
 
     // 2. Config file
-    let config = load_config();
     if let Some(key) = config["api_key"].as_str() {
         if !key.is_empty() {
             return key.to_string();
@@ -362,12 +379,12 @@ fn setup_custom() -> (String, String, String) {
     (api_base, model, api_key)
 }
 
-fn resolve_config_field(env_var: &str, config_key: &str, default: &str) -> String {
+fn resolve_config_field(config: &Value, env_var: &str, config_key: &str, default: &str) -> String {
     env::var(env_var)
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
-            load_config()[config_key]
+            config[config_key]
                 .as_str()
                 .filter(|s| !s.is_empty())
                 .unwrap_or(default)
@@ -490,37 +507,86 @@ fn system_prompt() -> String {
 }
 
 // ── sandbox executor ───────────────────────────────────────────────────────────
+const DANGEROUS_FIND_FLAGS: &[&str] = &[
+    "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fls", "-fprintf",
+];
+
 fn exec_sandboxed(cmd: &str, args: &[String], deadline: Instant) -> String {
     if !ALLOWED_COMMANDS.contains(&cmd) {
         return format!("Permission Denied: '{cmd}' is not in the allowed command list.");
     }
 
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
+    // Block dangerous find flags that allow arbitrary execution or file modification
+    if cmd == "find" {
+        for arg in args {
+            if DANGEROUS_FIND_FLAGS.iter().any(|f| arg.eq_ignore_ascii_case(f)) {
+                return format!("Permission Denied: '{arg}' is not allowed with find.");
+            }
+        }
+    }
+
+    if Instant::now() >= deadline {
         return "Error: timeout reached".into();
     }
 
-    let result = Command::new(cmd)
+    let mut child = match Command::new(cmd)
         .args(args)
         .stdin(process::Stdio::null())
         .stdout(process::Stdio::piped())
         .stderr(process::Stdio::piped())
-        .spawn();
-
-    let mut child = match result {
+        .env_remove("LLM_API_KEY")
+        .spawn()
+    {
         Ok(c) => c,
         Err(e) => return format!("Error: {e}"),
     };
 
-    let status = match child.wait() {
-        Ok(s) => s,
-        Err(e) => return format!("Error: {e}"),
+    // Read stdout/stderr in threads to avoid pipe buffer deadlock
+    let stdout = child.stdout.take();
+    let max_bytes = MAX_OUTPUT_BYTES as u64 + 1;
+    let stdout_thread = thread::spawn(move || -> Vec<u8> {
+        let mut buf = Vec::new();
+        if let Some(out) = stdout {
+            let _ = out.take(max_bytes).read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let stderr = child.stderr.take();
+    let stderr_thread = thread::spawn(move || -> Vec<u8> {
+        let mut buf = Vec::new();
+        if let Some(err) = stderr {
+            let _ = err.take(max_bytes).read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    // Wait with timeout enforcement via polling
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = stdout_thread.join();
+                    let _ = stderr_thread.join();
+                    return "Error: timeout reached".into();
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return format!("Error: {e}");
+            }
+        }
     };
 
-    let mut stdout_buf = Vec::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = stdout.read_to_end(&mut stdout_buf);
-    }
+    let stdout_buf = stdout_thread.join().unwrap_or_default();
+    let stderr_buf = stderr_thread.join().unwrap_or_default();
 
     let mut output = if stdout_buf.len() > MAX_OUTPUT_BYTES {
         let mut s = String::from_utf8_lossy(&stdout_buf[..MAX_OUTPUT_BYTES]).into_owned();
@@ -531,10 +597,6 @@ fn exec_sandboxed(cmd: &str, args: &[String], deadline: Instant) -> String {
     };
 
     if !status.success() {
-        let mut stderr_buf = Vec::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            let _ = stderr.read_to_end(&mut stderr_buf);
-        }
         let stderr_str = String::from_utf8_lossy(&stderr_buf);
         output.push_str(&format!(
             "\n[exit {}] {}",
@@ -696,7 +758,7 @@ fn call_anthropic(
         "system": system,
         "messages": messages,
         "tools": tools,
-        "max_tokens": 4096,
+        "max_tokens": 512,
         "temperature": 0,
     });
 
@@ -873,12 +935,16 @@ fn main() {
 
     let user_query = args.join(" ");
 
-    // Config: env vars → config file → interactive setup
-    let api_key = resolve_api_key();
-    let api_base = resolve_config_field("LLM_API_BASE", "api_base", "https://api.openai.com/v1");
-    let model = resolve_config_field("LLM_MODEL", "model", "gpt-4o-mini");
-
+    // Config: env vars → config file → interactive setup (load once)
+    let config = load_config();
+    let api_key = resolve_api_key(&config);
+    let api_base = resolve_config_field(&config, "LLM_API_BASE", "api_base", "https://api.openai.com/v1");
     let backend = detect_backend(&api_base);
+    let model_default = match backend {
+        ApiBackend::Anthropic => "claude-haiku-4-5-20251001",
+        ApiBackend::OpenAI => "gpt-5-mini",
+    };
+    let model = resolve_config_field(&config, "LLM_MODEL", "model", model_default);
 
     // Build ureq agent with timeouts
     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -909,7 +975,7 @@ fn main() {
     // ── agent loop ─────────────────────────────────────────────────────────────
     for _round in 0..MAX_TOOL_ROUNDS {
         if Instant::now() >= deadline {
-            eprintln!("llmc: 15s timeout exceeded");
+            eprintln!("llmc: {}s timeout exceeded", HARD_TIMEOUT.as_secs());
             process::exit(1);
         }
 
@@ -933,6 +999,18 @@ fn main() {
                     } else {
                         eprintln!("llmc: {reason}");
                     }
+                    process::exit(1);
+                }
+                // Heuristic: a valid command is typically 1-3 lines.
+                // Multi-line prose without shell metacharacters is likely an explanation.
+                let line_count = text.lines().count();
+                if line_count > 3
+                    && !text.contains('|')
+                    && !text.contains('&')
+                    && !text.contains(';')
+                    && !text.ends_with('\\')
+                {
+                    eprintln!("llmc: could not generate a command");
                     process::exit(1);
                 }
                 println!("{text}");

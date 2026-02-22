@@ -50,7 +50,7 @@ Final shell command -> replaces READLINE_LINE / BUFFER
 ```
 
 - When the LLM needs to inspect local files or system state, it calls the `run_readonly_command` tool to execute read-only commands.
-- Up to 10 tool-call rounds are supported, with a hard 15-second timeout on the entire execution.
+- Up to 10 tool-call rounds are supported, with a hard 30-second timeout on the entire execution.
 
 ## Installation
 
@@ -172,7 +172,7 @@ ls, grep, cat, find, head, tail, tree, file, stat, which, wc, du
 
 ### Timeout
 
-The entire execution (API calls + tool execution) is subject to a **15-second** hard timeout.
+The entire execution (API calls + tool execution) is subject to a **30-second** hard timeout.
 
 ### Config File
 
