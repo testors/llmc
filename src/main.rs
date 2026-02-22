@@ -25,6 +25,12 @@ enum ApiBackend {
     Anthropic,
 }
 
+#[derive(PartialEq)]
+enum Mode {
+    Command,
+    Chat { to_stderr: bool },
+}
+
 fn detect_backend(api_base: &str) -> ApiBackend {
     if api_base.contains("anthropic.com") {
         ApiBackend::Anthropic
@@ -506,6 +512,46 @@ fn system_prompt() -> String {
     )
 }
 
+fn chat_system_prompt() -> String {
+    let cwd = env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| ".".into());
+    let shell = env::var("SHELL").unwrap_or_else(|_| "bash".into());
+    let os = env::consts::OS;
+
+    format!(
+        "You are a helpful terminal assistant. Answer concisely.\n\n\
+         Environment:\n- OS: {os}\n- Shell: {shell}\n- CWD: {cwd}\n\n\
+         You may call the `run_readonly_command` tool to inspect the local filesystem when needed.\n\n\
+         Rules:\n\
+         1. Answer in plain text. No markdown formatting.\n\
+         2. Be concise — prefer short, direct answers.\n\
+         3. When showing commands, just write them plainly without code fences."
+    )
+}
+
+// ── model upgrade for ask mode ──────────────────────────────────────────────────
+fn upgrade_model_for_ask(config_model: &str) -> String {
+    // Map recommended models to their high-performance counterpart
+    let providers: &[(&[&str], &str)] = &[
+        (
+            &["claude-haiku-4-5-20251001"],
+            "claude-opus-4-5-20251101",
+        ),
+        (&["gpt-5-mini"], "gpt-5.2"),
+        (&["gemini-2.5-flash-lite"], "gemini-2.5-pro"),
+    ];
+
+    for (recommended, high_perf) in providers {
+        if recommended.contains(&config_model) {
+            return high_perf.to_string();
+        }
+    }
+
+    // User manually chose a model — respect it
+    config_model.to_string()
+}
+
 // ── sandbox executor ───────────────────────────────────────────────────────────
 const DANGEROUS_FIND_FLAGS: &[&str] = &[
     "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fls", "-fprintf",
@@ -752,13 +798,14 @@ fn call_anthropic(
     system: &str,
     messages: &[Value],
     tools: &Value,
+    max_tokens: u32,
 ) -> ApiResult {
     let body = json!({
         "model": model,
         "system": system,
         "messages": messages,
         "tools": tools,
-        "max_tokens": 512,
+        "max_tokens": max_tokens,
         "temperature": 0,
     });
 
@@ -893,6 +940,7 @@ fn print_help() {
     eprintln!("llmc {} — natural language to shell command", env!("CARGO_PKG_VERSION"));
     eprintln!();
     eprintln!("Usage: llmc <query>        convert natural language to a shell command");
+    eprintln!("       llmc --ask <query>  ask a question and get an answer");
     eprintln!("       llmc --setup        reconfigure API provider/model/key");
     eprintln!("       llmc --config       show current configuration");
     eprintln!("       llmc --version      show version");
@@ -933,7 +981,27 @@ fn main() {
         }
     }
 
-    let user_query = args.join(" ");
+    // Detect mode: --ask flag or ? prefix
+    let (user_query, mode) = if args[0] == "--ask" {
+        let query = args[1..].join(" ");
+        if query.is_empty() {
+            eprintln!("llmc: --ask requires a question");
+            process::exit(1);
+        }
+        (query, Mode::Chat { to_stderr: false })
+    } else {
+        let joined = args.join(" ");
+        if joined.starts_with("? ") || joined == "?" {
+            let query = joined["?".len()..].trim().to_string();
+            if query.is_empty() {
+                eprintln!("llmc: empty question");
+                process::exit(1);
+            }
+            (query, Mode::Chat { to_stderr: true })
+        } else {
+            (joined, Mode::Command)
+        }
+    };
 
     // Config: env vars → config file → interactive setup (load once)
     let config = load_config();
@@ -944,7 +1012,18 @@ fn main() {
         ApiBackend::Anthropic => "claude-haiku-4-5-20251001",
         ApiBackend::OpenAI => "gpt-5-mini",
     };
-    let model = resolve_config_field(&config, "LLM_MODEL", "model", model_default);
+    let config_model = resolve_config_field(&config, "LLM_MODEL", "model", model_default);
+
+    // Select system prompt and model based on mode
+    let (system, model) = match &mode {
+        Mode::Command => (system_prompt(), config_model),
+        Mode::Chat { .. } => (chat_system_prompt(), upgrade_model_for_ask(&config_model)),
+    };
+
+    let max_tokens: u32 = match &mode {
+        Mode::Command => 512,
+        Mode::Chat { .. } => 4096,
+    };
 
     // Build ureq agent with timeouts
     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -953,8 +1032,6 @@ fn main() {
         .timeout_read(remaining)
         .timeout_write(Duration::from_secs(5))
         .build();
-
-    let system = system_prompt();
 
     // Build initial messages (backend-specific)
     let mut messages: Vec<Value> = match backend {
@@ -985,36 +1062,48 @@ fn main() {
                 call_openai(&agent, &api_base, &model, &api_key, &messages, &tools)
             }
             ApiBackend::Anthropic => {
-                call_anthropic(&agent, &api_base, &model, &api_key, &system, &messages, &tools)
+                call_anthropic(&agent, &api_base, &model, &api_key, &system, &messages, &tools, max_tokens)
             }
         };
         spinner.stop();
 
         match result {
             ApiResult::Text(text) => {
-                if let Some(rest) = text.strip_prefix("NOCOMMAND:") {
-                    let reason = rest.lines().next().unwrap_or("").trim();
-                    if reason.is_empty() {
-                        eprintln!("llmc: could not generate a command");
-                    } else {
-                        eprintln!("llmc: {reason}");
+                match &mode {
+                    Mode::Command => {
+                        if let Some(rest) = text.strip_prefix("NOCOMMAND:") {
+                            let reason = rest.lines().next().unwrap_or("").trim();
+                            if reason.is_empty() {
+                                eprintln!("llmc: could not generate a command");
+                            } else {
+                                eprintln!("llmc: {reason}");
+                            }
+                            process::exit(1);
+                        }
+                        // Heuristic: a valid command is typically 1-3 lines.
+                        // Multi-line prose without shell metacharacters is likely an explanation.
+                        let line_count = text.lines().count();
+                        if line_count > 3
+                            && !text.contains('|')
+                            && !text.contains('&')
+                            && !text.contains(';')
+                            && !text.ends_with('\\')
+                        {
+                            eprintln!("llmc: could not generate a command");
+                            process::exit(1);
+                        }
+                        println!("{text}");
+                        return;
                     }
-                    process::exit(1);
+                    Mode::Chat { to_stderr: true } => {
+                        eprintln!("\n{text}");
+                        return; // exit 0 — widget clears BUFFER
+                    }
+                    Mode::Chat { to_stderr: false } => {
+                        println!("{text}");
+                        return;
+                    }
                 }
-                // Heuristic: a valid command is typically 1-3 lines.
-                // Multi-line prose without shell metacharacters is likely an explanation.
-                let line_count = text.lines().count();
-                if line_count > 3
-                    && !text.contains('|')
-                    && !text.contains('&')
-                    && !text.contains(';')
-                    && !text.ends_with('\\')
-                {
-                    eprintln!("llmc: could not generate a command");
-                    process::exit(1);
-                }
-                println!("{text}");
-                return;
             }
             ApiResult::ToolCalls(calls) => {
                 // Push assistant message with tool calls

@@ -66,7 +66,7 @@ _ai_cmd_replace() {
   local result
   result="$(llmc "$READLINE_LINE" 2>/dev/tty)"
 
-  if [[ $? -eq 0 && -n "$result" ]]; then
+  if [[ $? -eq 0 ]]; then
     READLINE_LINE="$result"
     READLINE_POINT=${#READLINE_LINE}
   fi
@@ -85,7 +85,7 @@ _ai_cmd_replace() {
   local result
   result="$(llmc "$BUFFER" 2>/dev/tty)"
 
-  if [[ $? -eq 0 && -n "$result" ]]; then
+  if [[ $? -eq 0 ]]; then
     BUFFER="$result"
     CURSOR=${#BUFFER}
   fi

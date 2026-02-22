@@ -16,12 +16,21 @@ $ find . -name "*.py" -mtime -3               # <- auto-replaced
 # Direct invocation
 $ llmc "find the 10 largest files in the current directory"
 du -ah . | sort -rh | head -10
+
+# Ask a question (direct)
+$ llmc --ask "what does chmod 755 do?"
+Sets rwx for owner, r-x for group and others.
+
+# Ask a question (Ctrl+E) — type "? <question>", press Ctrl+E
+$ ? what does chmod 755 do?   # <- press Ctrl+E here
+# Answer is shown in the terminal, your prompt line stays unchanged
 ```
 
 ### CLI Options
 
 ```
 llmc <query>        convert natural language to a shell command
+llmc --ask <query>  ask a question and get an answer
 llmc --setup        configure or reconfigure API provider/model/key
 llmc --config       show current configuration
 llmc --version      show version
