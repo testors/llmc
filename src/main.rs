@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 // ── constants ──────────────────────────────────────────────────────────────────
 const HARD_TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_OUTPUT_BYTES: usize = 2000;
+const MAX_OUTPUT_BYTES: usize = 10_000;
 const MAX_TOOL_ROUNDS: usize = 10;
 const ALLOWED_COMMANDS: &[&str] = &[
     "ls", "grep", "cat", "find", "head", "tail", "tree", "file", "stat", "which", "wc", "du",

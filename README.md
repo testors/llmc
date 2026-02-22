@@ -168,7 +168,7 @@ ls, grep, cat, find, head, tail, tree, file, stat, which, wc, du
 
 - Any command outside the whitelist returns `Permission Denied`
 - Binaries are executed directly via `std::process::Command` — no `sh -c` wrapper, preventing shell injection
-- Command output exceeding 2,000 bytes is automatically truncated
+- Command output exceeding 10,000 bytes is automatically truncated
 
 ### Timeout
 
