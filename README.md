@@ -32,11 +32,15 @@ Final shell command -> replaces READLINE_LINE / BUFFER
 
 ## Installation
 
-### Prerequisites
+```bash
+curl -fsSL https://raw.githubusercontent.com/testors/llmc/main/install.sh | sh
+```
 
-- [Rust toolchain](https://rustup.rs/) (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+That's it. Restart your shell (or `source ~/.zshrc`) and you're ready to go.
 
-### Quick Install
+Supports **macOS** and **Linux** on both **x86_64** and **arm64**.
+
+### Build from Source
 
 ```bash
 git clone https://github.com/testors/llmc.git
@@ -45,16 +49,7 @@ cargo build --release
 ./target/release/llmc --install
 ```
 
-This will:
-1. Copy the binary to `~/.local/bin/llmc`
-2. Add `~/.local/bin` to your `PATH` if needed
-3. Register the **Ctrl+E** shell integration for your shell (Bash/Zsh)
-
-Then activate it:
-
-```bash
-source ~/.zshrc   # or ~/.bashrc
-```
+Requires [Rust toolchain](https://rustup.rs/).
 
 ### Uninstall
 
