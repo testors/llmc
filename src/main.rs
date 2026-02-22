@@ -1030,9 +1030,12 @@ fn main() {
         ],
     };
 
-    let tools = match backend {
-        ApiBackend::OpenAI => tool_schema_openai(),
-        ApiBackend::Anthropic => tool_schema_anthropic(),
+    let tools = match &mode {
+        Mode::Command => match backend {
+            ApiBackend::OpenAI => tool_schema_openai(),
+            ApiBackend::Anthropic => tool_schema_anthropic(),
+        },
+        Mode::Chat { .. } => json!([]),
     };
 
     // ── agent loop ─────────────────────────────────────────────────────────────
