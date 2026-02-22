@@ -4,13 +4,15 @@ A lightweight agentic CLI tool that converts natural language into shell command
 
 Type what you want to do in plain language on your prompt, press `Ctrl+E`, and the LLM inspects your local environment to produce the exact shell command.
 
+Supports **OpenAI**, **Anthropic** (native), and **Google Gemini** out of the box, plus any OpenAI-compatible API.
+
 ## How It Works
 
 ```
 User input (natural language)
   |
   v
-llmc ----> LLM API (OpenAI-compatible)
+llmc ----> LLM API (OpenAI / Anthropic / Gemini)
   |              |
   |              v
   |        run_readonly_command (Tool Call)
@@ -37,43 +39,80 @@ Final shell command -> replaces READLINE_LINE / BUFFER
 ### Quick Install
 
 ```bash
-git clone https://github.com/your-username/llmc.git
+git clone https://github.com/testors/llmc.git
 cd llmc
-./install.sh
+cargo build --release
+./target/release/llmc --install
 ```
 
-The install script will:
-1. Build the release binary
-2. Install it to `~/.local/bin/` (no `sudo` required)
-3. Add `~/.local/bin` to your `PATH` if needed
-4. Register the **Ctrl+E** shell integration for your shell (Bash/Zsh)
+This will:
+1. Copy the binary to `~/.local/bin/llmc`
+2. Add `~/.local/bin` to your `PATH` if needed
+3. Register the **Ctrl+E** shell integration for your shell (Bash/Zsh)
+
+Then activate it:
+
+```bash
+source ~/.zshrc   # or ~/.bashrc
+```
+
+### Uninstall
+
+```bash
+llmc --uninstall
+```
+
+Removes the binary, shell integration, and optionally the config file.
 
 ## Configuration
 
 ### Interactive Setup (First Run)
 
-If no API key is configured, you will be prompted interactively:
+On first run, llmc walks you through provider and model selection:
 
 ```
 $ llmc "check disk usage"
-llmc: API key is not set.
+llmc: initial setup
 
-API Key: sk-...
-API Base URL (Enter=https://api.openai.com/v1):
-Model (Enter=gpt-4o-mini):
+Select API provider:
+  1) ChatGPT (OpenAI)
+  2) Claude (Anthropic)
+  3) Gemini (Google)
+  4) Other (manual input)
+
+Choice [1-4]: 2
+
+Select model:
+  1) claude-haiku-4-5-20251001 (recommended)
+  2) claude-sonnet-4-5-20250929 (balanced)
+  3) claude-opus-4-5-20251101 (high performance)
+  4) Enter manually
+
+Choice [1-4]: 1
+
+API Key: sk-ant-...
+
 llmc: config saved -> ~/.config/llmc/config.json
 ```
 
 The config is saved to `~/.config/llmc/config.json` with `chmod 600` (owner-only access).
+
+### Reconfigure
+
+```bash
+llmc --setup
+```
+
+Re-runs the provider/model/key setup and overwrites the existing config.
 
 ### Environment Variables (Override)
 
 Environment variables take precedence over the config file:
 
 ```bash
-export LLM_API_KEY="sk-..."                          # Required (if no config file)
-export LLM_API_BASE="https://api.openai.com/v1"      # Optional, default: OpenAI
-export LLM_MODEL="gpt-4o-mini"                        # Optional, default: gpt-4o-mini
+export LLM_API_KEY="sk-..."
+export LLM_API_BASE="https://api.openai.com/v1"
+export LLM_MODEL="gpt-5-mini"
 ```
 
 ### Resolution Order
@@ -95,20 +134,6 @@ export LLM_MODEL="llama3"
 export LLM_API_BASE="http://localhost:4000/v1"
 ```
 
-## Shell Integration
-
-Shell integration is automatically configured by `./install.sh`. To set it up manually:
-
-```bash
-# Zsh
-echo 'source /path/to/llmc/setup_zsh.sh' >> ~/.zshrc
-
-# Bash
-echo 'source /path/to/llmc/setup_bash.sh' >> ~/.bashrc
-```
-
-After setup, type a natural language description on the prompt and press **Ctrl+E** to replace it with the generated command. Pressing Ctrl+E on an empty line does nothing.
-
 ## Usage
 
 ```bash
@@ -116,10 +141,31 @@ After setup, type a natural language description on the prompt and press **Ctrl+
 $ llmc "find the 10 largest files in the current directory"
 du -ah . | sort -rh | head -10
 
-# Via Ctrl+E
+# Via Ctrl+E (shell integration)
 $ find py files modified in the last 3 days   # <- press Ctrl+E here
 $ find . -name "*.py" -mtime -3               # <- auto-replaced
 ```
+
+### CLI Options
+
+```
+llmc <query>        convert natural language to a shell command
+llmc --setup        reconfigure API provider/model/key
+llmc --install      install binary & Ctrl+E shell integration
+llmc --uninstall    remove everything
+llmc --version      show version
+llmc --help         show help
+```
+
+## Supported Providers
+
+| Provider | API Base | Auth | Models |
+|----------|----------|------|--------|
+| OpenAI | `https://api.openai.com/v1` | Bearer token | gpt-5-mini, gpt-5.2, gpt-4.1-mini |
+| Anthropic | `https://api.anthropic.com` | `x-api-key` header | claude-haiku-4-5, claude-sonnet-4-5, claude-opus-4-5 |
+| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | Bearer token | gemini-2.5-flash-lite, gemini-2.5-flash, gemini-2.5-pro |
+
+Anthropic uses native Messages API (`/v1/messages`). OpenAI and Gemini use Chat Completions API (`/chat/completions`).
 
 ## Security
 
@@ -142,33 +188,6 @@ The entire execution (API calls + tool execution) is subject to a **15-second** 
 ### Config File
 
 `~/.config/llmc/config.json` is protected with `chmod 600` (owner read/write only).
-
-## Project Structure
-
-```
-llmc/
-├── Cargo.toml         # Dependencies and release optimizations
-├── src/main.rs        # Agent loop, sandbox, config management
-├── install.sh         # Build + install script (no sudo)
-├── setup_bash.sh      # Bash Ctrl+E integration
-├── setup_zsh.sh       # Zsh Ctrl+E integration
-└── README.md
-```
-
-## Release Build Optimization
-
-The following settings in `Cargo.toml` minimize binary size:
-
-```toml
-[profile.release]
-opt-level = "z"    # Optimize for size
-lto = true         # Link-time optimization
-codegen-units = 1  # Single codegen unit
-panic = "abort"    # Abort on panic
-strip = true       # Strip debug symbols
-```
-
-Resulting binary size: ~1.3MB (arm64 macOS)
 
 ## License
 
