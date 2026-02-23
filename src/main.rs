@@ -513,7 +513,27 @@ fn system_prompt() -> String {
 }
 
 fn chat_system_prompt() -> String {
-    "You are a helpful assistant. Be concise. Answer in plain text without markdown formatting.".to_string()
+    let now = chrono::Local::now();
+    let current_date = now.format("%Y-%m-%d %A").to_string();
+
+    format!(
+        "The current date is {current_date}.\n\n\
+         You are a helpful, accurate, and concise AI assistant.\n\n\
+         ## Core Instructions\n\
+         - Answer questions directly and get to the point. Do not add unnecessary preamble or filler.\n\
+         - If you are unsure or do not know the answer, say so honestly. Never fabricate information.\n\
+         - Keep responses short and focused unless the user explicitly asks for a detailed explanation.\n\
+         - You MUST always respond in the same language the user writes in. If the user writes in Korean, respond in Korean. If the user writes in Japanese, respond in Japanese. Never default to English unless the user writes in English.\n\n\
+         ## Response Style\n\
+         - Use natural, conversational language. Avoid robotic or overly formal phrasing.\n\
+         - Do not use bullet points, numbered lists, or markdown formatting unless the user requests it or the answer genuinely requires structured formatting.\n\
+         - Do not repeat the user's question back to them.\n\
+         - Do not add disclaimers or caveats unless they are critical to the accuracy of the answer.\n\n\
+         ## Accuracy\n\
+         - Prioritize correctness over speed. Think step by step internally before responding.\n\
+         - When answering factual questions, distinguish between what you know with confidence and what you are less certain about.\n\
+         - If a question is ambiguous, give the most likely interpretation and answer it, then briefly note the alternative interpretation if relevant."
+    )
 }
 
 // ── model upgrade for ask mode ──────────────────────────────────────────────────
@@ -785,8 +805,9 @@ fn call_anthropic(
     messages: &[Value],
     tools: &Value,
     max_tokens: u32,
+    thinking: bool,
 ) -> ApiResult {
-    let body = json!({
+    let mut body = json!({
         "model": model,
         "system": system,
         "messages": messages,
@@ -794,6 +815,11 @@ fn call_anthropic(
         "max_tokens": max_tokens,
         "temperature": 0,
     });
+    if thinking {
+        body["thinking"] = json!({ "type": "enabled", "budget_tokens": 10000 });
+        body["max_tokens"] = json!(16000);
+        body["temperature"] = json!(1);
+    }
 
     let url = format!("{}/v1/messages", api_base.trim_end_matches('/'));
 
@@ -822,11 +848,14 @@ fn call_anthropic(
         match block.r#type.as_str() {
             "tool_use" => {
                 if let (Some(id), Some(name)) = (&block.id, &block.name) {
-                    tool_calls.push(ToolCallInfo {
-                        id: id.clone(),
-                        name: name.clone(),
-                        args: block.input.clone().unwrap_or(json!({})),
-                    });
+                    // Only handle client-side tools; skip server-side tools (web_search etc.)
+                    if name == "run_readonly_command" {
+                        tool_calls.push(ToolCallInfo {
+                            id: id.clone(),
+                            name: name.clone(),
+                            args: block.input.clone().unwrap_or(json!({})),
+                        });
+                    }
                 }
             }
             "text" => {
@@ -1035,7 +1064,22 @@ fn main() {
             ApiBackend::OpenAI => tool_schema_openai(),
             ApiBackend::Anthropic => tool_schema_anthropic(),
         },
-        Mode::Chat { .. } => json!([]),
+        Mode::Chat { .. } => match backend {
+            ApiBackend::Anthropic => json!([
+                { "type": "web_search_20250305", "name": "web_search" },
+                { "type": "code_execution_20250825", "name": "code_execution" },
+            ]),
+            ApiBackend::OpenAI => {
+                if api_base.contains("googleapis.com") {
+                    json!([
+                        { "google_search": {} },
+                        { "code_execution": {} },
+                    ])
+                } else {
+                    json!([])
+                }
+            }
+        },
     };
 
     // ── agent loop ─────────────────────────────────────────────────────────────
@@ -1051,7 +1095,7 @@ fn main() {
                 call_openai(&agent, &api_base, &model, &api_key, &messages, &tools)
             }
             ApiBackend::Anthropic => {
-                call_anthropic(&agent, &api_base, &model, &api_key, &system, &messages, &tools, max_tokens)
+                call_anthropic(&agent, &api_base, &model, &api_key, &system, &messages, &tools, max_tokens, mode != Mode::Command)
             }
         };
         spinner.stop();
