@@ -64,7 +64,7 @@ _ai_cmd_replace() {
   [[ -z "$READLINE_LINE" ]] && return
 
   local result
-  result="$(llmc "$READLINE_LINE" 2>/dev/tty)"
+  result="$(LLMC_WIDGET=1 llmc "$READLINE_LINE" 2>/dev/tty)"
 
   if [[ $? -eq 0 ]]; then
     READLINE_LINE="$result"
@@ -83,7 +83,7 @@ _ai_cmd_replace() {
   [[ -z "$BUFFER" ]] && return
 
   local result
-  result="$(llmc "$BUFFER" 2>/dev/tty)"
+  result="$(LLMC_WIDGET=1 llmc "$BUFFER" 2>/dev/tty)"
 
   if [[ $? -eq 0 ]]; then
     BUFFER="$result"

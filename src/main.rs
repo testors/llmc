@@ -212,8 +212,8 @@ fn resolve_api_key(config: &Value) -> String {
         }
     }
 
-    // 3. Interactive setup (only if running interactively)
-    if !is_interactive() {
+    // 3. Interactive setup (only if running interactively, not from shell widget)
+    if !is_interactive() || env::var("LLMC_WIDGET").is_ok() {
         eprintln!("llmc: not configured. Run `llmc --setup` first.");
         process::exit(1);
     }
